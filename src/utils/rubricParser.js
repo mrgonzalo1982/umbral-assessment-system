@@ -1,65 +1,94 @@
 /**
- * Utility to parse raw rubric text into the system's format
+ * Advanced State-Machine Rubric Parser.
+ * Handles both "Excel style" (tab-separated) and "PDF style" (newline-separated)
+ * by collecting chunks of text and grouping them aggressively into blocks of 5.
  */
-
 export const parseRawRubric = (text) => {
-  const rubrics = {
-    group: [],
-    individual: []
-  };
+  const rubrics = { group: [], individual: [] };
+  if (!text || !text.trim()) return rubrics;
 
   const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-  let currentSection = null;
+  let currentSection = 'group'; 
+  let buffer = [];
 
-  lines.forEach(line => {
-    // Detect Sections
-    if (line.toLowerCase().includes('section 1') || line.toLowerCase().includes('group product')) {
-      currentSection = 'group';
-      return;
-    }
-    if (line.toLowerCase().includes('section 2') || line.toLowerCase().includes('individual')) {
-      currentSection = 'individual';
-      return;
-    }
+  const flushBuffer = () => {
+    while (buffer.length >= 5) {
+      // 1. Limpiar el título (remover números sueltos o puntajes)
+      let title = buffer[0]
+        .replace(/\(\d+\s*points?\)/i, '')
+        .replace(/_{2,}\s*\/\d+/, '')
+        .replace(/^\d+\s*[-.)]\s*/, '') // Remover "1.", "1-", "1)"
+        .replace(/points?$/i, '')
+        .trim();
 
-    // Detect Criteria (Common pattern: Name + Levels)
-    // Example: Pronunciation 4 Levels 3 2 1
-    // Better pattern: Split by tabs or multiple spaces if it's a table copy-paste
-    const parts = line.split(/\t| {3,}/);
-    
-    if (parts.length >= 5 && currentSection) {
-      const title = parts[0].replace(/Criterion|Criteria/i, '').trim();
-      if (title.toLowerCase() === 'criteria' || title.toLowerCase() === 'student') return;
+      // 2. Si el título es válido, construimos el criterio
+      if (title.length > 2 && !/^\d+$/.test(title)) {
+        const desc = {
+          4: buffer[1],
+          3: buffer[2],
+          2: buffer[3],
+          1: buffer[4]
+        };
 
-      const desc = {
-        4: parts[1] || 'Excelente',
-        3: parts[2] || 'Bueno',
-        2: parts[3] || 'Regular',
-        1: parts[4] || 'Insufiente'
-      };
-
-      // Extract points if present (e.g. ___/2)
-      let weight = 1;
-      const pointsMatch = line.match(/___?\/(\d+)/);
-      if (pointsMatch) {
-         const maxPts = parseInt(pointsMatch[1]);
-         weight = maxPts / 4; // Assuming 4 is the max level
-      } else if (currentSection === 'individual') {
-         // Default individual from user example seems to be 4 pts each (20 total / 5 criteria)
-         weight = 1; 
-      } else if (currentSection === 'group') {
-         // Default group from user example seems to be 2 pts each (8 total / 4 criteria)
-         weight = 0.5;
+        rubrics[currentSection].push({
+          id: `cr_ai_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+          title, 
+          weight: 1, 
+          desc
+        });
       }
 
-      rubrics[currentSection].push({
-        id: `cr_ai_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-        title,
-        weight,
-        desc
-      });
+      // 3. Avanzamos el buffer sacando los 5 elementos que ya usamos
+      buffer = buffer.slice(5);
+
+      // 4. Limpieza post-criterio: A veces el PDF pega el "Puntaje máximo" (ej: "4") al final de la fila.
+      // Si el siguiente elemento es un número suelto o la palabra "puntos", lo descartamos para no desfasar el siguiente título.
+      while (buffer.length > 0 && (/^\d+$/.test(buffer[0]) || buffer[0].toLowerCase().includes('point') || buffer[0].toLowerCase().includes('punto') || /^_+[/\s\d]*$/.test(buffer[0]) || /^\/?\d+$/.test(buffer[0]))) {
+        buffer.shift();
+      }
+    }
+  };
+
+  lines.forEach(line => {
+    const l = line.toLowerCase();
+    
+    // Dividir por Tabulación o Múltiples Espacios (Para soportar copiado desde Excel/Word tables)
+    // Si es un PDF roto, simplemente devolverá la línea entera como 1 solo elemento.
+    const parts = line.split(/\t| {2,}/).map(p => p.trim()).filter(p => p.length > 0);
+
+    // Detectar Cambio de Sección (Ignorando mayúsculas)
+    if (parts.length <= 2 && (l.includes('section 2') || l.includes('individual') || l.includes('oral presentation'))) {
+      flushBuffer();
+      currentSection = 'individual';
+      buffer = []; 
+      return;
+    } 
+    if (parts.length <= 2 && (l.includes('section 1') || l.includes('group product') || l.includes('poster'))) {
+      flushBuffer();
+      currentSection = 'group';
+      buffer = [];
+      return;
+    }
+
+    // Ignorar encabezados y basura común
+    if (l.includes('criteria') && l.includes('demonstrated')) return;
+    if (l.includes('subtotal') || l.startsWith('total') || l.includes('final score') || l.includes('puntaje final')) return;
+    
+    parts.forEach(p => {
+       // Omitir columnas vacías o columnas que solo digan "Pts"
+       if (p.toLowerCase() === 'pts' || p === '-') return;
+       buffer.push(p);
+    });
+
+    // Si el buffer ya tiene 5 o más elementos, intentamos procesar.
+    // Esto es vital para el caso de Excel (donde 1 línea llena los 5 elementos de golpe).
+    if (buffer.length >= 5) {
+       flushBuffer();
     }
   });
+
+  // Limpiar cualquier residuo que haya quedado
+  flushBuffer();
 
   return rubrics;
 };

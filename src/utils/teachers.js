@@ -2,26 +2,30 @@
  * Teacher and Course Access Configuration
  */
 
-export const TEACHERS = [
+export const DEFAULT_TEACHERS = [
   {
     id: 'me',
-    name: 'Gonzalo Flores',
-    courses: ['1° medio A', '1° medio C', '2° medio B', '3° medio B', '4° medio B']
+    name: 'Mr. Gonzalo Flores',
+    email: 'gonzalo.flores@colegioumbral.com',
+    courses: ['1° Medio A', '1° Medio C', '2° Medio B', '3° Medio B', '4° Medio B']
   },
   {
     id: 'carla',
     name: 'Miss Carla Ramirez',
-    courses: ['7°B', '8°B', '2 medio A', '3° medio A', '4° medio A', 'Pre-Kinder', '2° básico A', 'Kinder']
+    email: 'carla.ramirez@colegioumbral.com',
+    courses: ['7° Básico B', '8° Básico B', '2° Medio A', '3° Medio A', '4° Medio A', 'Pre-Kinder', '2° Básico A', 'Kinder']
   },
   {
     id: 'javiera',
     name: 'Miss Javiera Lizama',
-    courses: ['6° básico B', '7° básico A', '8° básico A', '5° básico B', '3° básico A', '4° básico A']
+    email: 'javiera.lizama@colegioumbral.com',
+    courses: ['6° Básico B', '7° Básico A', '8° Básico A', '5° Básico B', '3° Básico A', '4° Básico A']
   },
   {
     id: 'valentina',
     name: 'Miss Valentina Cornejo',
-    courses: [], // Catch-all
+    email: 'valentina.cornejo@colegioumbral.com',
+    courses: [], 
     isBackup: true
   }
 ];
@@ -63,22 +67,55 @@ export const normalizeCourse = (course) => {
 };
 
 /**
+ * Formats a course name for display (e.g., NT1 -> Pre-Kinder)
+ * @param {string} course - Course name
+ * @returns {string} - Formatted course name
+ */
+export const formatCourseDisplay = (course) => {
+  if (!course) return 'General';
+  let c = course.trim();
+  const cu = c.toUpperCase();
+  
+  if (cu.includes('TRANSICI') && cu.includes('1')) return 'Pre-Kinder';
+  if (cu.includes('TRANSICI') && cu.includes('2')) return 'Kinder';
+  if (cu.includes('NT1')) return 'Pre-Kinder';
+  if (cu.includes('NT2')) return 'Kinder';
+  if (cu === 'KINDER') return 'Kinder';
+  if (cu === 'PRE-KINDER' || cu === 'PREKINDER') return 'Pre-Kinder';
+
+  // Standardize casing: "1° Básico A"
+  const parts = c.split(' ');
+  if (parts.length > 1) {
+    const formattedParts = parts.map((p, index) => {
+      if (index === 0) return p.toUpperCase(); // "1°"
+      if (p.length === 1 && /[a-zA-Z]/.test(p)) return p.toUpperCase(); // Section "A"
+      // "Básico" or "Medio"
+      return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+    });
+    return formattedParts.join(' ');
+  }
+
+  return c.charAt(0).toUpperCase() + c.slice(1).toLowerCase();
+};
+
+/**
  * Checks if a teacher has access to a specific course
  * @param {Object} teacher - Teacher object
  * @param {string} courseName - Name of the course
  * @returns {boolean}
  */
-export const hasAccess = (teacher, courseName) => {
+export const hasAccess = (teacher, courseName, allTeachers = DEFAULT_TEACHERS) => {
   if (!teacher) return false;
+  if (!teacher.courses) teacher.courses = [];
   
   const normalizedCourseName = normalizeCourse(courseName);
 
-  // If it's the backup teacher (Valentina), she has access to anything 
+  // If it's the backup teacher, she has access to anything 
   // NOT assigned to others
   if (teacher.isBackup) {
-    const isAssignedToOthers = TEACHERS
-      .filter(t => !t.isBackup)
-      .some(t => t.courses.some(c => normalizeCourse(c) === normalizedCourseName));
+    const isAssignedToOthers = allTeachers
+      .filter(t => !t.isBackup && t.id !== teacher.id)
+      .some(t => (t.courses || []).some(c => normalizeCourse(c) === normalizedCourseName));
     return !isAssignedToOthers;
   }
 

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Users, Upload, Plus, Trash2, UserPlus, Save, Search, Filter } from 'lucide-react';
-import { normalizeCourse } from '../utils/teachers';
+import { normalizeCourse, formatCourseDisplay } from '../utils/teachers';
 
 export default function RosterManager({ students, onUpdateStudents, teacher }) {
   const [newName, setNewName] = useState('');
@@ -12,7 +12,7 @@ export default function RosterManager({ students, onUpdateStudents, teacher }) {
     const newStudent = { 
       id: `s_${Date.now()}`, 
       name: newName.trim().toUpperCase(), 
-      curso: newCurso.trim() || 'General' 
+      curso: formatCourseDisplay(newCurso)
     };
     onUpdateStudents([...students, newStudent]);
     setNewName('');

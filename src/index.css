@@ -114,3 +114,12 @@ body {
 input, select, textarea {
   @apply transition-all duration-200;
 }
+
+@media print {
+  body { background: white !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .no-print { display: none !important; }
+  .print-only { display: block !important; }
+  .print-break-inside-avoid { break-inside: avoid; }
+  .print-page-break-after { page-break-after: always; }
+  @page { size: auto; margin: 0mm; }
+}

@@ -14,7 +14,10 @@ import {
   Activity,
   Mail,
   CheckCircle2,
-  RefreshCw
+  RefreshCw,
+  FileSpreadsheet,
+  Printer,
+  Send
 } from 'lucide-react';
 import { calculateChileanMark } from '../utils/grading';
 import { 
@@ -33,9 +36,9 @@ import {
 } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 import jsPDF from 'jspdf';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 
-export default function ResultsView({ students = [], rubrics = { group: [], individual: [] }, assessments = {} }) {
+export default function ResultsView({ students = [], rubrics = { group: [], individual: [] }, assessments = {}, evaluationType = 'grupal-individual' }) {
   const [selectedStudentId, setSelectedStudentId] = useState(null);
 
   // LOGGING FOR DEBUGGING - If the screen is still blank, these logs will help if the user takes a screenshot of the console.
@@ -44,18 +47,30 @@ export default function ResultsView({ students = [], rubrics = { group: [], indi
   }, [students, rubrics, assessments]);
 
   // Robust Guards
-  const safeRubricGroup = Array.isArray(rubrics?.group) ? rubrics.group : [];
-  const safeRubricIndividual = Array.isArray(rubrics?.individual) ? rubrics.individual : [];
+  const safeRubricGroup = useMemo(() => Array.isArray(rubrics?.group) ? rubrics.group : [], [rubrics]);
+  const safeRubricIndividual = useMemo(() => Array.isArray(rubrics?.individual) ? rubrics.individual : [], [rubrics]);
   const safeAssessments = assessments || {};
   const safeStudentGroups = safeAssessments.studentGroups || {};
 
-  const getMaxTotal = () => {
+   const maxTotal = useMemo(() => {
     try {
-      const g = safeRubricGroup.reduce((t, c) => t + (4 * (c?.weight || 1)), 0);
-      const i = safeRubricIndividual.reduce((t, c) => t + (4 * (c?.weight || 1)), 0);
+      let g = 0;
+      let i = 0;
+      
+      if (evaluationType !== 'individual') {
+        g = safeRubricGroup.reduce((t, c) => t + (4 * (parseFloat(c?.weight) || 1)), 0);
+      }
+      
+      if (evaluationType !== 'grupal') {
+        i = safeRubricIndividual.reduce((t, c) => t + (4 * (parseFloat(c?.weight) || 1)), 0);
+      }
+      
       return Math.max(1, g + i);
-    } catch (e) { return 1; }
-  };
+    } catch (e) { 
+      console.error("Error calculating maxTotal:", e);
+      return 1; 
+    }
+  }, [safeRubricGroup, safeRubricIndividual, evaluationType]);
 
   const results = useMemo(() => {
     if (!Array.isArray(students) || students.length === 0) return [];
@@ -67,21 +82,44 @@ export default function ResultsView({ students = [], rubrics = { group: [], indi
         const gScores = safeAssessments?.groupScores?.[groupId] || {};
         const iScores = safeAssessments?.individualScores?.[s.id] || {};
         
-        const gScoreTotal = safeRubricGroup.reduce((t, cr) => t + (((gScores[cr?.id]) || 0) * (cr?.weight || 1)), 0);
-        const iScoreTotal = safeRubricIndividual.reduce((t, cr) => t + (((iScores[cr?.id]) || 0) * (cr?.weight || 1)), 0);
+        let gScoreTotal = 0;
+        if (evaluationType !== 'individual') {
+           gScoreTotal = safeRubricGroup.reduce((t, cr) => t + (((parseFloat(gScores[cr?.id])) || 0) * (parseFloat(cr?.weight) || 1)), 0);
+        }
+
+        let iScoreTotal = 0;
+        if (evaluationType !== 'grupal') {
+           iScoreTotal = safeRubricIndividual.reduce((t, cr) => t + (((parseFloat(iScores[cr?.id])) || 0) * (parseFloat(cr?.weight) || 1)), 0);
+        }
+
         const total = gScoreTotal + iScoreTotal;
-        const mark = calculateChileanMark(total, getMaxTotal());
+        const mark = calculateChileanMark(total, maxTotal);
         const isPassing = parseFloat(mark) >= 4.0;
+
+        let gMaxTotal = 0;
+        if (evaluationType !== 'individual') {
+          gMaxTotal = safeRubricGroup.reduce((t, c) => t + (4 * (parseFloat(c?.weight) || 1)), 0);
+        }
+        const gMark = gMaxTotal > 0 ? calculateChileanMark(gScoreTotal, gMaxTotal) : null;
+
+        let iMaxTotal = 0;
+        if (evaluationType !== 'grupal') {
+          iMaxTotal = safeRubricIndividual.reduce((t, c) => t + (4 * (parseFloat(c?.weight) || 1)), 0);
+        }
+        const iMark = iMaxTotal > 0 ? calculateChileanMark(iScoreTotal, iMaxTotal) : null;
 
         return {
           id: s.id,
           name: s.name ? String(s.name).toUpperCase() : 'ESTUDIANTE SIN NOMBRE',
           email: s.email || '',
+          groupId: groupId,
           group: groupId ? (safeAssessments.groups?.find(g => g.id === groupId)?.name?.toUpperCase() || 'GRUPO DESCONOCIDO') : 'SIN GRUPO',
           gScoreTotal,
           iScoreTotal,
           total,
-          mark,
+          mark: mark || "1.0",
+          gMark,
+          iMark,
           isPassing,
           gScores,
           iScores
@@ -91,71 +129,326 @@ export default function ResultsView({ students = [], rubrics = { group: [], indi
         return null;
       }
     }).filter(r => r !== null);
-  }, [students, rubrics, assessments]);
+  }, [students, safeRubricGroup, safeRubricIndividual, safeAssessments, maxTotal]);
 
-  const selectedStudent = results.find(r => r.id === selectedStudentId);
+  const selectedStudent = useMemo(() => results.find(r => r.id === selectedStudentId), [results, selectedStudentId]);
 
   const radarData = useMemo(() => {
     if (!selectedStudent) return [];
     try {
       const groupData = safeRubricGroup.map(cr => ({
         subject: cr.title || 'Criterio',
-        A: (selectedStudent.gScores[cr.id] || 0),
+        A: parseFloat(selectedStudent.gScores?.[cr.id]) || 0,
         fullMark: 4
       }));
       const indivData = safeRubricIndividual.map(cr => ({
         subject: cr.title || 'Criterio',
-        A: (selectedStudent.individualScores?.[cr.id] || selectedStudent.iScores?.[cr.id] || 0),
+        A: parseFloat(selectedStudent.iScores?.[cr.id]) || 0,
         fullMark: 4
       }));
       return [...groupData, ...indivData];
-    } catch (e) { return []; }
-  }, [selectedStudent, rubrics]);
+    } catch (e) { 
+      console.error("Error calculating radarData:", e);
+      return []; 
+    }
+  }, [selectedStudent, safeRubricGroup, safeRubricIndividual]);
 
   const generateFeedback = (res) => {
     if (!res || res.total === 0) return "Evaluación pendiente.";
     try {
-      const strengths = [];
-      const improvements = [];
-      
-      safeRubricGroup.forEach(cr => {
-        const s = res.gScores[cr.id] || 0;
-        if (s === 4) strengths.push(cr.title);
-        if (s <= 2) improvements.push(cr.title);
-      });
-      safeRubricIndividual.forEach(cr => {
-        const s = res.iScores[cr.id] || 0;
-        if (s === 4) strengths.push(cr.title);
-        if (s <= 2) improvements.push(cr.title);
-      });
-
       let text = `En tu evaluación de ${res.group}, has obtenido un ${res.mark}. `;
-      if (strengths.length > 0) text += `Destacas en: ${strengths.join(', ')}. `;
-      if (improvements.length > 0) text += `Te sugerimos reforzar: ${improvements.join(', ')}. `;
+      const gObs = safeAssessments?.groupObservations?.[res.groupId];
+      if (gObs) text += `\nComentario Grupal: ${gObs}. `;
+      const obs = safeAssessments?.observations?.[res.id];
+      if (obs) text += `\nComentario Individual: ${obs}. `;
       return text;
     } catch (e) { return "Reporte generado con éxito."; }
+  };
+
+  const generatePDFContent = (doc, res) => {
+    const pageWidth = doc.internal.pageSize.width;
+    const pageHeight = doc.internal.pageSize.height;
+    const startPage = (doc.internal.getNumberOfPages && typeof doc.internal.getNumberOfPages === 'function') ? doc.internal.getNumberOfPages() : (doc.internal.pages && doc.internal.pages.length ? doc.internal.pages.length - 1 : 1);
+    
+    // 1. Header (Dark block)
+    doc.setFillColor(30, 27, 75); // Indigo 950
+    doc.rect(0, 0, pageWidth, 25, 'F');
+    
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(18);
+    doc.setFont("helvetica", "bold");
+    doc.text("PUNTAJES Y COMENTARIOS", pageWidth / 2, 14, { align: 'center' });
+    
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(244, 63, 94); // Rose 500
+    doc.text("COLEGIO UMBRAL DE CURAUMA", pageWidth / 2, 20, { align: 'center' });
+
+    // 2. Student Info Card
+    let currentY = 32;
+    doc.setDrawColor(226, 232, 240); // Slate 200
+    doc.setFillColor(248, 250, 252); // Slate 50
+    doc.roundedRect(15, currentY, pageWidth - 30, 24, 3, 3, 'FD');
+    
+    doc.setTextColor(30, 27, 75);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    doc.text("ESTUDIANTE:", 20, currentY + 8);
+    doc.setFont("helvetica", "normal");
+    doc.text(res.name, 45, currentY + 8);
+    
+    doc.setFont("helvetica", "bold");
+    doc.text("CURSO/GRUPO:", 20, currentY + 16);
+    doc.setFont("helvetica", "normal");
+    doc.text(res.group, 50, currentY + 16);
+    
+    // Mark block
+    doc.setFillColor(res.isPassing ? 37 : 244, res.isPassing ? 99 : 63, res.isPassing ? 235 : 94); // Blue or Rose
+    doc.roundedRect(pageWidth - 45, currentY + 3, 26, 18, 2, 2, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(7);
+    doc.setFont("helvetica", "bold");
+    doc.text("NOTA FINAL", pageWidth - 32, currentY + 9, { align: 'center' });
+    doc.setFontSize(14);
+    doc.text(res.mark, pageWidth - 32, currentY + 17, { align: 'center' });
+
+    currentY += 28;
+
+    // Sub-grades if applicable
+    if (evaluationType !== 'individual' && res.gMark) {
+      doc.setTextColor(100);
+      doc.setFontSize(9);
+      doc.text(`Nota Grupal: ${res.gMark}`, 20, currentY);
+      currentY += 5;
+    }
+    if (evaluationType !== 'grupal' && res.iMark) {
+      doc.setTextColor(100);
+      doc.setFontSize(9);
+      doc.text(`Nota Individual: ${res.iMark}`, 20, currentY);
+      currentY += 5;
+    }
+    currentY += 3;
+
+    // 3. Feedback box
+    doc.setTextColor(30, 27, 75);
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "bold");
+    doc.text("Observación / Retroalimentación:", 15, currentY);
+    currentY += 4;
+
+    const feedbackText = generateFeedback(res);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    
+    const splitText = doc.splitTextToSize(feedbackText, pageWidth - 40);
+    const feedbackHeight = splitText.length * 4 + 6;
+    
+    doc.setDrawColor(226, 232, 240);
+    doc.setFillColor(241, 245, 249); 
+    doc.roundedRect(15, currentY, pageWidth - 30, feedbackHeight, 2, 2, 'FD');
+    doc.setTextColor(71, 85, 105); 
+    doc.text(splitText, 20, currentY + 5);
+    
+    currentY += feedbackHeight + 8;
+
+    // 4. AutoTable for Criteria
+    doc.setTextColor(30, 27, 75);
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "bold");
+    doc.text("Desglose de Puntajes:", 15, currentY);
+    currentY += 3;
+
+    const tableData = [];
+    if (evaluationType !== 'individual' && safeRubricGroup.length > 0) {
+      tableData.push([{ content: 'Criterios Grupales', colSpan: 2, styles: { fillColor: [226, 232, 240], textColor: [30, 27, 75], fontStyle: 'bold' } }]);
+      safeRubricGroup.forEach(cr => {
+        tableData.push([cr.title, `${res.gScores?.[cr.id] || 0} / 4`]);
+      });
+    }
+
+    if (evaluationType !== 'grupal' && safeRubricIndividual.length > 0) {
+      tableData.push([{ content: 'Criterios Individuales', colSpan: 2, styles: { fillColor: [226, 232, 240], textColor: [30, 27, 75], fontStyle: 'bold' } }]);
+      safeRubricIndividual.forEach(cr => {
+        tableData.push([cr.title, `${res.iScores?.[cr.id] || 0} / 4`]);
+      });
+    }
+
+    if (tableData.length > 0) {
+      autoTable(doc, {
+        startY: currentY,
+        head: [['Criterio', 'Puntaje Obtenido']],
+        body: tableData,
+        theme: 'grid',
+        headStyles: { fillColor: [30, 27, 75], textColor: 255, fontSize: 8, cellPadding: 2 },
+        styles: { font: 'helvetica', fontSize: 8, cellPadding: 2 },
+        columnStyles: {
+          1: { halign: 'center', cellWidth: 40, fontStyle: 'bold' }
+        },
+        margin: { left: 15, right: 15 }
+      });
+    }
+    
+    // Add footers from startPage to the new endPage
+    const endPage = (doc.internal.getNumberOfPages && typeof doc.internal.getNumberOfPages === 'function') ? doc.internal.getNumberOfPages() : (doc.internal.pages && doc.internal.pages.length ? doc.internal.pages.length - 1 : 1);
+    for (let i = startPage; i <= endPage; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.setTextColor(150);
+      doc.setFont("helvetica", "normal");
+      doc.text(`Generado el: ${new Date().toLocaleDateString()} - Departamento de Inglés, Colegio Umbral de Curauma`, pageWidth / 2, pageHeight - 10, { align: 'center' });
+    }
+    doc.setPage(endPage);
   };
 
   const exportPDF = (res) => {
     try {
       const doc = new jsPDF();
-      doc.setFontSize(22);
-      doc.setTextColor(30, 27, 75);
-      doc.text("REPORTE PEDAGÓGICO", 105, 20, { align: 'center' });
-      doc.setFontSize(10);
-      doc.text("COLEGIO UMBRAL DE CURAUMA", 105, 30, { align: 'center' });
-      doc.line(20, 35, 190, 35);
-      doc.text(`ESTUDIANTE: ${res.name}`, 20, 50);
-      doc.text(`NOTA: ${res.mark}`, 20, 60);
+      generatePDFContent(doc, res);
       doc.save(`Reporte_${res.name}.pdf`);
-    } catch (e) { alert("Error PDF"); }
+    } catch (e) { 
+      console.error(e);
+      alert("Error PDF: " + e.message); 
+    }
+  };
+
+  const exportAllPDFs = () => {
+    try {
+      const doc = new jsPDF();
+      const validResults = results.filter(r => r.total > 0);
+      
+      if (validResults.length === 0) return alert("No hay evaluaciones completadas para exportar.");
+      
+      validResults.forEach((res, index) => {
+        if (index > 0) doc.addPage();
+        generatePDFContent(doc, res);
+      });
+      
+      doc.save(`Reportes_Curso_Completo.pdf`);
+    } catch (e) { 
+      console.error(e);
+      alert("Error generando PDF masivo: " + e.message); 
+    }
   };
 
   const sendEmail = (res) => {
     if (!res.email) return alert("Sin email");
-    const subject = encodeURIComponent(`Reporte English - ${res.name}`);
-    const body = encodeURIComponent(`Nota: ${res.mark}\n\n${generateFeedback(res)}`);
+    const subject = encodeURIComponent(`English Assessment Results - ${res.name}`);
+    const body = encodeURIComponent(`Hello ${res.name.split(' ')[0]},\n\nHere are your results for the latest English assessment:\n\nFINAL GRADE: ${res.mark}\n\nFEEDBACK:\n${generateFeedback(res)}\n\nSCORE BREAKDOWN:\n${[...safeRubricGroup, ...safeRubricIndividual].map(cr => `- ${cr.title}: ${res.gScores?.[cr.id] || res.iScores?.[cr.id] || 0}/4`).join('\n')}\n\nBest regards,\nEnglish Department`);
     window.location.href = `mailto:${res.email}?subject=${subject}&body=${body}`;
+  };
+
+  const sendAllEmails = async () => {
+    if (!window.confirm("¿Enviar reportes por correo a todos los estudiantes con email registrado?")) return;
+    try {
+      const { collection, addDoc } = await import('firebase/firestore');
+      const { db } = await import('../lib/firebase');
+      
+      let count = 0;
+      for (const res of results.filter(r => r.total > 0 && r.email)) {
+        await addDoc(collection(db, 'mail'), {
+          to: res.email,
+          message: {
+            subject: `English Assessment Results - ${res.name}`,
+            html: `
+              <div style="font-family: 'Inter', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f8fafc; border-radius: 20px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 10px 25px rgba(0,0,0,0.05);">
+                <!-- Header -->
+                <div style="background-color: #1e1b4b; padding: 40px 30px; text-align: center; border-bottom: 5px solid #f43f5e;">
+                  <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-style: italic; font-weight: 900; letter-spacing: -1px;">English Department</h1>
+                  <p style="color: #f43f5e; margin: 5px 0 0 0; font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px;">Colegio Umbral de Curauma</p>
+                </div>
+                
+                <!-- Content -->
+                <div style="padding: 40px 30px;">
+                  <h2 style="color: #1e1b4b; font-size: 20px; margin-top: 0;">Hello ${res.name.split(' ')[0]},</h2>
+                  <p style="color: #64748b; font-size: 16px; line-height: 1.6;">Here are your results for the latest English assessment. Keep up the great work!</p>
+                  
+                  <!-- Grade Card -->
+                  <div style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 15px; padding: 25px; text-align: center; margin: 30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+                    <p style="margin: 0; color: #64748b; font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">Final Grade</p>
+                    <p style="margin: 10px 0 0 0; font-size: 48px; font-weight: 900; color: ${res.isPassing ? '#2563eb' : '#f43f5e'};">${res.mark}</p>
+                  </div>
+                  
+                  <!-- Feedback Section -->
+                  <h3 style="color: #1e1b4b; font-size: 16px; border-bottom: 2px solid #f1f5f9; padding-bottom: 10px; margin-top: 40px;">Pedagogical Feedback</h3>
+                  <div style="background-color: #e0e7ff; border-left: 4px solid #4f46e5; padding: 20px; border-radius: 0 10px 10px 0; margin-top: 15px;">
+                    <p style="margin: 0; color: #312e81; font-size: 15px; line-height: 1.6; font-style: italic;">
+                      ${generateFeedback(res).replace(/\n/g, '<br>')}
+                    </p>
+                  </div>
+                  
+                  <!-- Detail Score -->
+                  <h3 style="color: #1e1b4b; font-size: 16px; border-bottom: 2px solid #f1f5f9; padding-bottom: 10px; margin-top: 40px;">Score Breakdown</h3>
+                  <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                    ${[...safeRubricGroup, ...safeRubricIndividual].map(cr => {
+                      const s = (res.gScores?.[cr.id] || res.iScores?.[cr.id] || 0);
+                      return `
+                      <tr>
+                        <td style="padding: 12px 0; border-bottom: 1px solid #f1f5f9; color: #475569; font-size: 14px;">${cr.title}</td>
+                        <td style="padding: 12px 0; border-bottom: 1px solid #f1f5f9; color: #1e1b4b; font-size: 14px; font-weight: bold; text-align: right;">${s} / 4</td>
+                      </tr>
+                      `;
+                    }).join('')}
+                  </table>
+                </div>
+                
+                <!-- Footer -->
+                <div style="background-color: #f1f5f9; padding: 20px 30px; text-align: center; border-top: 1px solid #e2e8f0;">
+                  <p style="margin: 0; color: #94a3b8; font-size: 12px;">This is an automated message from the English Department Evaluation System.</p>
+                  <p style="margin: 5px 0 0 0; color: #94a3b8; font-size: 12px;">© ${new Date().getFullYear()} Colegio Umbral de Curauma</p>
+                </div>
+              </div>
+            `
+          }
+        });
+        count++;
+      }
+      alert(`¡Éxito! ${count} correos encolados para envío. (Requiere extensión Trigger Email en Firebase)`);
+    } catch (e) {
+      console.error(e);
+      alert("Error encolando correos: " + e.message);
+    }
+  };
+
+  const exportToCSV = () => {
+    if (!results || results.length === 0) return alert("No hay datos para exportar.");
+    
+    const validResults = results.filter(r => r.total > 0);
+    if (validResults.length === 0) return alert("No hay evaluaciones completadas para exportar.");
+
+    const activeCriteria = [
+      ...(evaluationType !== 'individual' ? safeRubricGroup : []),
+      ...(evaluationType !== 'grupal' ? safeRubricIndividual : [])
+    ];
+    
+    let csvContent = "\uFEFF"; // BOM for Excel UTF-8 support
+    
+    let headers = ["Estudiante", "Grupo/Curso", "Nota Final", "Puntaje Total", "Feedback IA", ...activeCriteria.map(c => `"${c.title.replace(/"/g, '""')}"`)];
+    csvContent += headers.join(";") + "\n";
+    
+    validResults.forEach(res => {
+      let row = [
+        `"${res.name}"`,
+        `"${res.group}"`,
+        `"${res.mark}"`,
+        `"${res.total.toFixed(1)}"`,
+        `"${generateFeedback(res).replace(/"/g, '""').replace(/\n/g, ' ')}"`
+      ];
+      
+      activeCriteria.forEach(cr => {
+        const s = res.gScores?.[cr.id] || res.iScores?.[cr.id] || 0;
+        row.push(s);
+      });
+      
+      csvContent += row.join(";") + "\n";
+    });
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Resultados_Evaluacion.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   if (!results || results.length === 0) {
@@ -172,9 +465,73 @@ export default function ResultsView({ students = [], rubrics = { group: [], indi
   }
 
   return (
-    <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-32">
-      {/* Metrics Row */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+    <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-32 print:p-0 print:space-y-0">
+      
+      {/* ECO-PRINT View (Only visible when printing) */}
+      <div className="hidden print:block w-full text-black bg-white">
+         {results.filter(r => r.total > 0).map(res => (
+            <div key={res.id} className="print-page-break-after p-8 border border-black mb-8 rounded-xl break-inside-avoid">
+               <h1 className="text-3xl font-black text-center mb-2">COLEGIO UMBRAL DE CURAUMA</h1>
+               <h2 className="text-xl text-center mb-6 uppercase border-b-2 border-black pb-4">REPORTE PEDAGÓGICO DE INGLÉS</h2>
+               
+               <div className="flex justify-between items-end mb-6">
+                  <div>
+                     <p><strong>ESTUDIANTE:</strong> {res.name}</p>
+                     <p><strong>GRUPO/CURSO:</strong> {res.group}</p>
+                  </div>
+                  <div className="text-right">
+                     <p className="text-5xl font-black">{res.mark}</p>
+                     <p className="text-sm">CALIFICACIÓN FINAL</p>
+                  </div>
+               </div>
+
+               <div className="mb-6 p-4 bg-gray-100 rounded-xl border border-gray-300">
+                  <h3 className="font-bold mb-2">Retroalimentación IA:</h3>
+                  <p className="text-sm whitespace-pre-wrap">{generateFeedback(res)}</p>
+               </div>
+
+               <h3 className="font-bold border-b border-black mb-2">Detalle de Rúbrica (Puntajes)</h3>
+               <table className="w-full text-xs text-left mb-4 border-collapse">
+                 <thead>
+                   <tr className="border-b border-black">
+                     <th className="py-1">Criterio (Grupo)</th>
+                     <th className="py-1">Puntaje</th>
+                   </tr>
+                 </thead>
+                 <tbody>
+                   {safeRubricGroup.map(cr => (
+                     <tr key={cr.id} className="border-b border-gray-300">
+                       <td className="py-1 pr-4">{cr.title}</td>
+                       <td className="py-1 font-bold">{res.gScores[cr.id] || 0} / 4</td>
+                     </tr>
+                   ))}
+                 </tbody>
+               </table>
+
+               <table className="w-full text-xs text-left border-collapse">
+                 <thead>
+                   <tr className="border-b border-black">
+                     <th className="py-1">Criterio (Individual)</th>
+                     <th className="py-1">Puntaje</th>
+                   </tr>
+                 </thead>
+                 <tbody>
+                   {safeRubricIndividual.map(cr => (
+                     <tr key={cr.id} className="border-b border-gray-300">
+                       <td className="py-1 pr-4">{cr.title}</td>
+                       <td className="py-1 font-bold">{res.iScores[cr.id] || 0} / 4</td>
+                     </tr>
+                   ))}
+                 </tbody>
+               </table>
+            </div>
+         ))}
+      </div>
+
+      {/* Main UI (Hidden when printing) */}
+      <div className="print:hidden space-y-10">
+         {/* Metrics Row */}
+         <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
          <div className="md:col-span-2 liquid-glass-dark p-10 text-white flex flex-col justify-between overflow-hidden relative">
             <div className="relative z-10">
                <h2 className="text-4xl font-black italic tracking-tighter mb-4">Métricas de Aula</h2>
@@ -195,6 +552,33 @@ export default function ResultsView({ students = [], rubrics = { group: [], indi
                         : '0.0'}
                   </span>
                   <span className="text-[9px] font-black uppercase text-slate-500 tracking-widest">Promedio</span>
+               </div>
+               <div className="ml-auto flex items-center gap-2">
+                  <button
+                    onClick={sendAllEmails}
+                    title="Enviar correos a todos"
+                    className="h-11 px-4 bg-white/15 hover:bg-white/25 text-white rounded-2xl transition-all flex items-center gap-2 font-black text-[10px] uppercase tracking-widest border border-white/20"
+                  >
+                    <Send size={16} /> Enviar
+                  </button>
+                  <button
+                    onClick={exportToCSV}
+                    className="h-11 px-5 bg-emerald-500 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-emerald-600 transition-all shadow-lg"
+                  >
+                    <FileSpreadsheet size={16} /> Excel
+                  </button>
+                  <button
+                    onClick={exportAllPDFs}
+                    className="h-11 px-5 bg-white text-indigo-950 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 hover:bg-rose-500 hover:text-white transition-all shadow-lg"
+                  >
+                    <FileText size={16} /> Descargar PDF
+                  </button>
+                  <button
+                    onClick={() => window.print()}
+                    className="h-11 px-5 bg-white/15 hover:bg-white/25 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest items-center gap-2 transition-all border border-white/20 hidden lg:flex"
+                  >
+                    <Printer size={16} /> Eco-Print
+                  </button>
                </div>
             </div>
             <Award size={200} className="absolute -bottom-10 -right-10 opacity-5" />
@@ -329,7 +713,10 @@ export default function ResultsView({ students = [], rubrics = { group: [], indi
                      <div className="flex-1 pt-4">
                         <h5 className="text-[10px] font-black uppercase text-slate-400 tracking-[0.3em] mb-6 pl-4">Desempeño</h5>
                         <div className="space-y-4">
-                           {[...safeRubricGroup, ...safeRubricIndividual].map(cr => {
+                           {[
+                             ...(evaluationType !== 'individual' ? safeRubricGroup : []),
+                             ...(evaluationType !== 'grupal' ? safeRubricIndividual : [])
+                           ].map(cr => {
                               const s = (selectedStudent.gScores?.[cr.id] || selectedStudent.iScores?.[cr.id] || 0);
                               return (
                                  <div key={cr.id} className="flex items-center justify-between bg-white px-6 py-4 rounded-[2rem] border border-slate-100 shadow-sm">
@@ -350,6 +737,7 @@ export default function ResultsView({ students = [], rubrics = { group: [], indi
                )}
             </AnimatePresence>
          </div>
+      </div>
       </div>
     </div>
   );
