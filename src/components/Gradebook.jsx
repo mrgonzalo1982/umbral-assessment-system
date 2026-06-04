@@ -87,15 +87,15 @@ export default function Gradebook({ students = [], projects = [] }) {
   const exportToCSV = () => {
     if (students.length === 0) return alert("No hay estudiantes para exportar.");
     
-    let csvContent = "\uFEFF"; // UTF-8 BOM
+    let csvContent = "\uFEFFsep=;\n"; // UTF-8 BOM + Excel separator indicator
     
     // Headers
-    const headers = ["Estudiante", ...projects.map(p => `"${p.name.replace(/"/g, '""')}"`), "Promedio Final"];
-    csvContent += headers.join(";") + "\n";
+    const headers = ["Estudiante", ...projects.map(p => p.name), "Promedio Final"];
+    csvContent += headers.map(h => `"${h.replace(/"/g, '""')}"`).join(";") + "\n";
     
     // Rows
     students.forEach(student => {
-      const row = [`"${student.name}"`];
+      const row = [student.name];
       let sum = 0;
       let count = 0;
       
@@ -110,7 +110,7 @@ export default function Gradebook({ students = [], projects = [] }) {
       
       const avg = count > 0 ? (sum / count).toFixed(1) : "-";
       row.push(avg);
-      csvContent += row.join(";") + "\n";
+      csvContent += row.map(val => `"${String(val || '').replace(/"/g, '""')}"`).join(";") + "\n";
     });
     
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });

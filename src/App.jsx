@@ -530,7 +530,7 @@ export default function App() {
 
     try {
       const projects = teacherData.projects;
-      let csvContent = "\uFEFF"; // UTF-8 BOM
+      let csvContent = "\uFEFFsep=;\n"; // UTF-8 BOM + Excel separator indicator
       
       const headers = [
         "Docente",
@@ -543,7 +543,7 @@ export default function App() {
         "Observaciones"
       ];
       
-      csvContent += headers.join(";") + "\n";
+      csvContent += headers.map(h => `"${h.replace(/"/g, '""')}"`).join(";") + "\n";
       
       const allStudentsMap = new Map();
       students.forEach(s => allStudentsMap.set(s.id, s));
@@ -604,7 +604,7 @@ export default function App() {
             obs.replace(/[\n\r;]/g, " ")
           ];
           
-          csvContent += row.join(";") + "\n";
+          csvContent += row.map(val => `"${String(val || '').replace(/"/g, '""')}"`).join(";") + "\n";
         });
       });
       

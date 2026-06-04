@@ -420,18 +420,18 @@ export default function ResultsView({ students = [], rubrics = { group: [], indi
       ...(evaluationType !== 'grupal' ? safeRubricIndividual : [])
     ];
     
-    let csvContent = "\uFEFF"; // BOM for Excel UTF-8 support
+    let csvContent = "\uFEFFsep=;\n"; // BOM for Excel UTF-8 support + Excel separator indicator
     
-    let headers = ["Estudiante", "Grupo/Curso", "Nota Final", "Puntaje Total", "Feedback IA", ...activeCriteria.map(c => `"${c.title.replace(/"/g, '""')}"`)];
-    csvContent += headers.join(";") + "\n";
+    let headers = ["Estudiante", "Grupo/Curso", "Nota Final", "Puntaje Total", "Feedback IA", ...activeCriteria.map(c => c.title)];
+    csvContent += headers.map(h => `"${h.replace(/"/g, '""')}"`).join(";") + "\n";
     
     validResults.forEach(res => {
-      let row = [
-        `"${res.name}"`,
-        `"${res.group}"`,
-        `"${res.mark}"`,
-        `"${res.total.toFixed(1)}"`,
-        `"${generateFeedback(res).replace(/"/g, '""').replace(/\n/g, ' ')}"`
+      const row = [
+        res.name,
+        res.group,
+        res.mark,
+        res.total.toFixed(1),
+        generateFeedback(res).replace(/\n/g, ' ')
       ];
       
       activeCriteria.forEach(cr => {
@@ -439,7 +439,7 @@ export default function ResultsView({ students = [], rubrics = { group: [], indi
         row.push(s);
       });
       
-      csvContent += row.join(";") + "\n";
+      csvContent += row.map(val => `"${String(val || '').replace(/"/g, '""')}"`).join(";") + "\n";
     });
     
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
