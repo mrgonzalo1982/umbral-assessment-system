@@ -31,7 +31,8 @@ import {
   UserPlus,
   X,
   Menu,
-  History
+  History,
+  Library
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { storage, calculateProjectGrade } from './utils/grading';
@@ -47,6 +48,7 @@ import AssessmentEngine from './components/AssessmentEngine';
 import ResultsView from './components/ResultsView';
 import AuthView from './components/AuthView';
 import Gradebook from './components/Gradebook';
+import LibraryView from './components/LibraryView';
 
 const DEFAULT_RUBRIC_GROUP = [
   { id: 'g1', title: 'Content Accuracy', weight: 1.5, desc: { 4: 'Excellent', 3: 'Good', 2: 'Fair', 1: 'Poor' } },
@@ -866,13 +868,26 @@ export default function App() {
           const hasLocalData = localProjects.length > 0;
           const cloudIsEmpty = !data.projects || data.projects.length === 0;
           
+          const isOwner = user && user.email === currentTeacher.email;
+
           if (hasLocalData && cloudIsEmpty) {
             console.log("🛡️ Protección Antirresurrección Vacía: Se bloqueó un intento de borrar datos locales con una nube vacía.");
+            if (isOwner) {
+              console.log("📤 Sincronizando local más nuevo (nube vacía) a la nube...");
+              const localRubrics = storage.load(`${currentTeacher.id}_rubrics`) || {};
+              setDoc(teacherDocRef, {
+                projects: localProjects,
+                rubrics: localRubrics,
+                lastUpdate: lastLocalUpdate,
+                lastSync: new Date().toISOString()
+              }, { merge: true }).catch(err => {
+                console.warn("Error uploading local data on empty cloud:", err);
+              });
+            }
             return;
           }
 
           // If local storage is empty, or the cloud is genuinely newer
-          const isOwner = user && user.email === currentTeacher.email;
           if (!isOwner || localProjects.length === 0 || cloudUpdate > lastLocalUpdate) {
             console.log(`☁️ Nube ganadora para docente ${currentTeacher.id}: Actualizando estado local.`);
             isCloudUpdate.current = true;
@@ -884,6 +899,18 @@ export default function App() {
             storage.save(`${currentTeacher.id}_rubrics`, data.rubrics || {});
           } else {
             console.log("🛡️ Protección Local: Se bloqueó una resurrección de datos antiguos.");
+            if (isOwner && lastLocalUpdate > cloudUpdate) {
+              console.log(`📤 Sincronizando local más nuevo (${lastLocalUpdate} > ${cloudUpdate}) a la nube...`);
+              const localRubrics = storage.load(`${currentTeacher.id}_rubrics`) || {};
+              setDoc(teacherDocRef, {
+                projects: localProjects,
+                rubrics: localRubrics,
+                lastUpdate: lastLocalUpdate,
+                lastSync: new Date().toISOString()
+              }, { merge: true }).catch(err => {
+                console.warn("Error uploading newer local data:", err);
+              });
+            }
           }
         }
         setHasInitialLoad(true);
@@ -913,6 +940,8 @@ export default function App() {
           id: `tpl_${Date.now()}`,
           name: name.toUpperCase(),
           author: currentTeacher?.name || 'Docente Colegio Umbral',
+          authorEmail: user?.email || '',
+          authorId: currentTeacher?.id || '',
           date: new Date().toISOString(),
           rubric: rubricData
         };
@@ -924,7 +953,7 @@ export default function App() {
         return false;
       }
     };
-  }, [currentTeacher, sharedTemplates]);
+  }, [currentTeacher, sharedTemplates, user]);
 
   // Autosave Teacher-Scoped Data (Projects and Rubrics)
   useEffect(() => {
@@ -979,6 +1008,19 @@ export default function App() {
     const timeout = setTimeout(syncToCloud, 2000); 
     return () => clearTimeout(timeout);
   }, [rubrics, projects, isLoaded, hasInitialLoad, currentTeacher]);
+
+  // Warn before closing tab if there is a pending save
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      if (isSaving) {
+        e.preventDefault();
+        e.returnValue = 'Tienes cambios pendientes de guardar en la nube. ¿Estás seguro de salir?';
+        return e.returnValue;
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isSaving]);
 
   // Autosave Global Roster (Admin Mode Only)
   useEffect(() => {
@@ -1130,6 +1172,30 @@ export default function App() {
     link.href = url;
     link.download = `backup_umbral_${selectedCourse || 'full'}.json`;
     link.click();
+  };
+
+  const deleteFromLibrary = async (templateId) => {
+    try {
+      const sharedDocRef = doc(rubricsDb, 'assessments_data', 'shared_library');
+      const updated = sharedTemplates.filter(t => t.id !== templateId);
+      await setDoc(sharedDocRef, { templates: updated }, { merge: true });
+      return true;
+    } catch (e) {
+      console.error("Error deleting template from library:", e);
+      return false;
+    }
+  };
+
+  const importTemplateToCourse = (rubric, courseName) => {
+    if (!currentTeacher) return;
+    const updatedRubrics = {
+      ...rubrics,
+      [courseName]: rubric
+    };
+    setRubrics(updatedRubrics);
+    storage.save(`${currentTeacher.id}_rubrics`, updatedRubrics);
+    localStorage.setItem(`umbral_${currentTeacher.id}_last_local_update`, Date.now().toString());
+    alert(`✅ Rúbrica asignada con éxito como plantilla para el curso ${courseName}.`);
   };
 
   const forceSync = async () => {
@@ -1292,6 +1358,25 @@ export default function App() {
           </div>
           <button
             onClick={() => {
+              setActiveTab('library');
+              setIsAdminMode(false);
+              setSelectedCourse(null);
+              setSelectedProjectId(null);
+              setIsMobileMenuOpen(false);
+            }}
+            className={`w-full flex items-center gap-3 p-4 rounded-2xl transition-all text-left mb-2 ${activeTab === 'library' && !isAdminMode ? 'bg-indigo-950 text-white shadow-lg shadow-indigo-950/20 scale-[1.02]' : 'hover:bg-slate-50 text-slate-600 hover:text-indigo-950'}`}
+          >
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${activeTab === 'library' && !isAdminMode ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-400'}`}>
+              <Library size={20} />
+            </div>
+            <div className="flex-1">
+               <div className="font-bold text-sm tracking-tight leading-none mb-1">Biblioteca</div>
+               <div className={`text-[9px] uppercase tracking-widest font-bold ${activeTab === 'library' && !isAdminMode ? 'text-indigo-200' : 'text-slate-400'}`}>Rúbricas Compartidas</div>
+            </div>
+            {activeTab === 'library' && !isAdminMode && <ChevronRight size={16} className="opacity-50" />}
+          </button>
+          <button
+            onClick={() => {
               setIsAdminMode(true);
               setCurrentTeacher(null);
               setSelectedCourse(null);
@@ -1358,7 +1443,7 @@ export default function App() {
          </div>
 
         {/* State 1: Welcome Screen */}
-        {!currentTeacher && !isAdminMode && (
+        {!currentTeacher && !isAdminMode && activeTab !== 'library' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8 z-10">
              <div className="absolute inset-0 overflow-hidden pointer-events-none">
                  <div className="blob bg-rose-200/40 absolute top-20 right-20 w-96 h-96 rounded-full blur-3xl animate-pulse" style={{animationDuration: '8s'}} />
@@ -1660,15 +1745,24 @@ export default function App() {
             </div>
           </div>
         )}
-        {currentTeacher && !selectedCourse && (
+        {currentTeacher && !selectedCourse && activeTab !== 'library' && (
           <div className="flex-1 flex flex-col h-full overflow-y-auto animate-in fade-in slide-in-from-bottom-4 duration-500 bg-slate-50">
             <header className="bg-white px-10 py-12 border-b border-indigo-950/5 shrink-0 flex items-center justify-between shadow-sm sticky top-0 z-10">
                <div>
                  <h2 className="text-4xl font-black text-indigo-950 uppercase italic tracking-tighter">{currentTeacher.name}</h2>
                  <p className="text-rose-500 font-bold uppercase tracking-widest text-[10px] mt-2">Selecciona un curso para comenzar</p>
                </div>
-               <div className="w-16 h-16 rounded-[2rem] bg-indigo-50 text-indigo-950 flex items-center justify-center font-black text-3xl shadow-inner">
-                  {currentTeacher.name.charAt(0)}
+               <div className="flex items-center gap-4">
+                  <button 
+                    onClick={() => exportTeacherGradesToCSV({ teacher: currentTeacher, projects })}
+                    className="px-6 py-4 bg-emerald-500 hover:bg-emerald-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center gap-2 transition-all shadow-md active:scale-95 border border-emerald-400/20"
+                    title="Exportar todas las notas de todos los cursos asignados a este docente a un archivo Excel CSV"
+                  >
+                    <FileSpreadsheet size={16} /> Exportar Todo a Excel
+                  </button>
+                  <div className="w-16 h-16 rounded-[2rem] bg-indigo-50 text-indigo-950 flex items-center justify-center font-black text-3xl shadow-inner">
+                     {currentTeacher.name.charAt(0)}
+                  </div>
                </div>
             </header>
             <div className="p-10 w-full max-w-7xl mx-auto">
@@ -1745,6 +1839,20 @@ export default function App() {
                   )}
                 </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'library' && !isAdminMode && (
+          <div className="flex-1 flex flex-col h-full overflow-y-auto animate-in fade-in slide-in-from-bottom-4 duration-500 bg-slate-50 p-6 md:p-10">
+            <LibraryView
+              sharedTemplates={sharedTemplates}
+              publishToLibrary={window.publishToLibrary}
+              deleteFromLibrary={deleteFromLibrary}
+              importTemplateToCourse={importTemplateToCourse}
+              currentTeacher={currentTeacher}
+              isAdminMode={isAdminMode}
+              user={user}
+            />
           </div>
         )}
 
